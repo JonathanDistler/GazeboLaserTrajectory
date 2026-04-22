@@ -6,8 +6,9 @@ import numpy as np
 import signal
 import sys
 import matplotlib.pyplot as plt
+import math
 
-print("🚀 Stable CoM + Smoothed Laser + Gaussian Heatmap")
+print("Beam Physics Model (Eq. 20)")
 
 # -----------------------------
 # STREAM
@@ -22,163 +23,178 @@ proc = subprocess.Popen(
 # -----------------------------
 # STORAGE
 # -----------------------------
-raw_com = deque(maxlen=2000)
 filtered_com = deque(maxlen=2000)
 
-laser_path = []
-
-# -----------------------------
-# FILTER STATE
-# -----------------------------
-alpha = 0.15  # smoothing factor (lower = smoother)
-
+alpha_smooth = 0.15
 prev_filtered = None
 
-
 # -----------------------------
-# SMOOTHING FUNCTION
+# SMOOTHING
 # -----------------------------
 def smooth(x, y, z):
     global prev_filtered
-
-    current = np.array([x, y, z])
+    cur = np.array([x, y, z])
 
     if prev_filtered is None:
-        prev_filtered = current
-        return current
+        prev_filtered = cur
+        return cur
 
-    filtered = alpha * current + (1 - alpha) * prev_filtered
-    prev_filtered = filtered
-
-    return filtered
-
+    prev_filtered = alpha_smooth * cur + (1 - alpha_smooth) * prev_filtered
+    return prev_filtered
 
 # -----------------------------
-# VELOCITY (smoothed)
+# GEOMETRY HELPERS
 # -----------------------------
-def get_velocity(history, window=8):
-    if len(history) < window + 1:
-        return np.array([0, 0, 1])
+def spot_waist(q, D, lam, z):
+    return math.sqrt((D / (math.pi * q**2))**2 +
+                     ((q**2 * lam * z) / D)**2)
 
-    a = np.array(history[-window])
-    b = np.array(history[-1])
+def fried_parm(k, z, Cn):
+    return (0.423 * k**2 * Cn**2 * z)**(-3/5)
 
-    v = b - a
-    norm = np.linalg.norm(v)
-
-    if norm < 1e-6:
-        return np.array([0, 0, 1])
-
-    return v / norm
-
+def effect_spot_waist(w0, r0, lam, z):
+    return math.sqrt(w0**2 + ((lam * z) / r0)**2)
 
 # -----------------------------
-# GAUSSIAN HEAT FIELD
+# PARAMETERS
 # -----------------------------
-def gaussian_heat(center, grid=40, sigma=0.25):
-    xs, ys, cs = [], [], []
+wavelength = 1064e-9
+q_factor = 1.5
+aper_diam = 0.1
+refrac_index = 1e-14
+wavenumber = 5.9e6
 
-    cx, cy, cz = center
+P0 = 5.0
+alpha_atm = 0.00015
 
-    for i in range(-grid, grid):
-        for j in range(-grid, grid):
+# -----------------------------
+# EQ (20): INTENSITY MODEL
+# -----------------------------
+def intensity_eq20(P0, alpha, z, w, x, y, theta):
 
-            x = cx + i * 0.02
-            y = cy + j * 0.02
+    # atmospheric attenuation
+    I0 = P0 * np.exp(-alpha * z)
 
-            r2 = (x - cx)**2 + (y - cy)**2
-            intensity = np.exp(-r2 / (2 * sigma**2))
+    cos_t = np.cos(theta)
+    cos_t = np.clip(cos_t, 1e-3, 1.0)
 
-            xs.append(x)
-            ys.append(y)
-            cs.append(intensity)
+    # Eq. (20) elliptical Gaussian
+    exponent = -2 * (x**2 + (y**2 / (cos_t**2))) / (w**2)
 
-    return np.array(xs), np.array(ys), np.array(cs)
+    I = I0 * cos_t * np.exp(exponent)
 
+    return I
+
+# -----------------------------
+# HEATMAP
+# -----------------------------
+def beam_heatmap(P0, alpha, z, w, theta, grid=500, span=0.5):
+
+    x = np.linspace(-span, span, grid)
+    y = np.linspace(-span, span, grid)
+
+    X, Y = np.meshgrid(x, y)
+
+    I = intensity_eq20(P0, alpha, z, w, X, Y, theta)
+
+    return X, Y, I
 
 # -----------------------------
 # EXIT HANDLER
 # -----------------------------
 def exit_handler(sig, frame):
-    print("\n📊 Plotting results...")
+    print("Plotting beam (Eq. 20)...")
 
-    com = np.array(filtered_com)
+    if len(filtered_com) == 0:
+        sys.exit(0)
 
-    # -------------------------
-    # CoM trajectory (SMOOTHED)
-    # -------------------------
-    if len(com) > 0:
-        plt.figure()
-        plt.plot(com[:, 0], com[:, 1], linewidth=1.5)
-        plt.title("Smoothed CoM Trajectory")
-        plt.xlabel("X")
-        plt.ylabel("Y")
-        plt.axis("equal")
+    last = filtered_com[-1]
 
     # -------------------------
-    # Laser path
+    # GEOMETRY
     # -------------------------
-    if len(laser_path) > 0:
-        lp = np.array(laser_path)
-
-        plt.figure()
-        plt.plot(lp[:, 0], lp[:, 1], 'r')
-        plt.title("Stable Laser Projection Path")
-        plt.axis("equal")
+    dist = np.linalg.norm(last)
+    theta = math.atan2(last[1], last[2])
 
     # -------------------------
-    # FINAL FRAME HEATMAP (DECAY)
+    # OPTICS
     # -------------------------
-    if len(filtered_com) > 0:
-        last = filtered_com[-1]
+    w0 = spot_waist(q_factor, aper_diam, wavelength, dist)
+    r0 = fried_parm(wavenumber, dist, refrac_index)
+    weff = effect_spot_waist(w0, r0, wavelength, dist)
 
-        x, y, c = gaussian_heat(last)
+    # -------------------------
+    # FIELD
+    # -------------------------
+    X, Y, I = beam_heatmap(P0, alpha_atm, dist, weff, theta)
 
-        plt.figure()
-        sc = plt.scatter(x, y, c=c, cmap="inferno", s=10)
-        plt.colorbar(sc)
-        plt.title("Final Frame Gaussian Heatmap (Decay)")
-        plt.axis("equal")
+    I = np.nan_to_num(I, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # safe floor (no collapse to zero)
+    I = np.clip(I, 1e-20, None)
+
+    I_log = np.log10(I)
+
+    # -------------------------
+    # DEBUG
+    # -------------------------
+    print("\n--- DEBUG ---")
+    print(f"Distance: {dist:.2f} m")
+    print(f"Theta (deg): {math.degrees(theta):.2f}")
+    print(f"w_eff: {weff:.6f}")
+    print(f"I max: {np.max(I):.6e}")
+    print(f"I min: {np.min(I):.6e}")
+
+    # -------------------------
+    # PLOT
+    # -------------------------
+    plt.figure(figsize=(6, 5))
+
+    plt.contourf(X, Y, I_log, levels=200, cmap="turbo")
+
+    levels = np.linspace(np.min(I_log), np.max(I_log), 30)
+    plt.contour(X, Y, I_log, levels=levels, colors='white', linewidths=0.4)
+
+    # Drone face (1m x 1m)
+    d = 0.5
+    plt.plot(
+        [-d, d, d, -d, -d],
+        [-d, -d, d, d, -d],
+        'cyan'
+    )
+
+    plt.scatter(0, 0, color='cyan', s=40)
+
+    plt.colorbar(label="log10(Intensity)")
+    plt.title(f"Beam Intensity (Eq. 20) {math.degrees(theta):.2f}-Degrees")
+    plt.xlabel("Drone x-face (m)")
+    plt.ylabel("Drone y-face (m)")
+    plt.axis("equal")
 
     plt.show()
     sys.exit(0)
 
-
 signal.signal(signal.SIGINT, exit_handler)
 
-
 # -----------------------------
-# PARSER STATE
+# LOOP
 # -----------------------------
 tracking = False
 reading = False
 
-x = y = z = None
-
-
-# -----------------------------
-# MAIN LOOP
-# -----------------------------
 while True:
     line = proc.stdout.readline()
-
     if not line:
         continue
 
     line = line.strip()
 
-    # -------------------------
-    # detect model
-    # -------------------------
     if 'name:' in line:
         tracking = ('x500_0' in line)
 
     if not tracking:
         continue
 
-    # -------------------------
-    # position block
-    # -------------------------
     if 'position' in line:
         reading = True
         x = y = z = None
@@ -187,44 +203,22 @@ while True:
     if reading:
 
         if 'x:' in line:
-            try:
-                x = float(line.split(':')[1])
-            except:
-                x = None
+            try: x = float(line.split(':')[1])
+            except: x = None
 
         elif 'y:' in line:
-            try:
-                y = float(line.split(':')[1])
-            except:
-                y = None
+            try: y = float(line.split(':')[1])
+            except: y = None
 
         elif 'z:' in line:
-            try:
-                z = float(line.split(':')[1])
-            except:
-                z = None
-
+            try: z = float(line.split(':')[1])
+            except: z = None
             reading = False
 
             if None in (x, y, z):
                 continue
 
-            # -------------------------
-            # RAW + FILTERED CoM
-            # -------------------------
-            raw_com.append((x, y, z))
-
             filtered = smooth(x, y, z)
             filtered_com.append(filtered)
 
-            # -------------------------
-            # LASER (velocity-driven, stable)
-            # -------------------------
-            vel = get_velocity(filtered_com)
-
-            laser_origin = filtered
-            laser_end = filtered + vel * 1.5
-
-            laser_path.append(laser_end)
-
-            print(f"📡 CoM (filtered): {filtered[0]:.4f}, {filtered[1]:.4f}, {filtered[2]:.4f}")
+            print(f"CoM: {filtered}")
