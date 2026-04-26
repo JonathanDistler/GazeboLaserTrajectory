@@ -49,6 +49,23 @@ To run the script that mimics a laser and a intensity pattern, run the following
 
 ```bash
 cd ~
-python3 laser_track.py
+python3 gazebo_control_state_estimate.py
 ```
 
+## Potential Errors
+Sometimes the Gazebo window doesn't render with the drone properly, in that event run the following commands and then exit out of the rendered Gazebo world:
+
+```bash
+pkill -f gz
+pkill -f gazebo
+pkill -f px4
+
+gz sim
+```
+
+## Helpful Commands
+Because I'm running out of a wsl environment, the directories aren't very intuitive, so I found that the following terminal command opens up the wsl native files: 
+
+```bash
+explorer.exe . 
+```
