@@ -1,6 +1,6 @@
 # Gazebo Laser Trajectory
 
-Part of my work with Cornell's Aerospace Adversary Lab; the goal of this project is to determine the location of an anti-drone laser system based on its unique laser diffraction using a novel diode-based detection system.
+Work with Cornell's Aerospace Adversary Lab; the goal of this project is to determine the location of an anti-drone laser system based on its unique laser diffraction using a novel diode-based detection system.
 
 Running the Gazebo simulation requires a Linux system. Since I am on Windows, I use WSL to run the environment. The following outlines this particular process, but it should be very similar on a truly Linux system. 
 
